@@ -6,12 +6,14 @@ import {
   DEFAULT_LIMIT,
   REQUEST_TIMEOUT_MS,
 } from '../constants.js';
+import { logger } from '../logger.js';
 import type {
   SparqlQueryParams,
   SearchResult,
   MetadataResult,
   CitationsResult,
   CitationEntry,
+  RecentQueryParams,
 } from '../types.js';
 
 /** Maps 3-letter language codes to CDM expression language URI suffixes */
@@ -106,19 +108,31 @@ export function escapeSparqlString(input: string): string {
 
 export class CellarClient {
   private async executeSparql<T>(sparql: string): Promise<T> {
-    const response = await fetch(SPARQL_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/sparql-query',
-        Accept: 'application/sparql-results+json',
-      },
-      body: sparql,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      throw new Error(`SPARQL endpoint error: ${response.status}`);
+    const start = Date.now();
+    try {
+      const response = await fetch(SPARQL_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/sparql-query',
+          Accept: 'application/sparql-results+json',
+        },
+        body: sparql,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        logger.error(
+          { status: response.status, duration_ms: Date.now() - start },
+          'SPARQL request failed',
+        );
+        throw new Error(`SPARQL endpoint error: ${response.status}`);
+      }
+      const result = (await response.json()) as T;
+      logger.debug({ duration_ms: Date.now() - start }, 'SPARQL query completed');
+      return result;
+    } catch (error) {
+      logger.error({ error: String(error), duration_ms: Date.now() - start }, 'SPARQL query error');
+      throw error;
     }
-    return (await response.json()) as T;
   }
 
   /**
@@ -640,8 +654,8 @@ export class CellarClient {
 
     if (!consolidatedCelex) {
       throw new Error(
-        `Keine konsolidierte Fassung für ${docType}/${year}/${number} verfügbar. ` +
-          `Verwenden Sie eurlex_fetch mit der CELEX-ID für die Original-OJ-Version.`,
+        `No consolidated version available for ${docType}/${year}/${number}. ` +
+          `Use eurlex_fetch with the CELEX ID to retrieve the original Official Journal version.`,
       );
     }
 
@@ -661,8 +675,8 @@ export class CellarClient {
 
     if (response.status === 404) {
       throw new Error(
-        `Keine konsolidierte Fassung für ${docType}/${year}/${number} verfügbar (${consolidatedCelex} nicht abrufbar). ` +
-          `Verwenden Sie eurlex_fetch mit der CELEX-ID für die Original-OJ-Version.`,
+        `No consolidated version available for ${docType}/${year}/${number} (${consolidatedCelex} not retrievable). ` +
+          `Use eurlex_fetch with the CELEX ID to retrieve the original Official Journal version.`,
       );
     }
 
@@ -674,5 +688,78 @@ export class CellarClient {
 
     const eliUrl = `http://data.europa.eu/eli/${docType}/${year}/${number}`;
     return { content: await response.text(), eliUrl };
+  }
+
+  /**
+   * Builds a SPARQL query to retrieve documents published/modified since a given date.
+   * Unlike buildSparqlQuery, this does not filter by title text — only by date and type.
+   */
+  buildRecentQuery(params: RecentQueryParams): string {
+    const lang = LANGUAGE_URI_MAP[params.language] ?? params.language;
+    const whereLines: string[] = [];
+
+    if (params.resource_type !== 'any') {
+      whereLines.push(
+        `    ?work cdm:work_has_resource-type <http://publications.europa.eu/resource/authority/resource-type/${params.resource_type}> .`,
+      );
+    }
+
+    whereLines.push(
+      '    ?work cdm:work_has_resource-type ?resTypeUri .',
+      '    BIND(REPLACE(STR(?resTypeUri), "^.*/", "") AS ?resType)',
+      '    ?work cdm:resource_legal_id_celex ?celex .',
+      `    ?expr cdm:expression_belongs_to_work ?work .`,
+      `    ?expr cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/${lang}> .`,
+      `    ?expr cdm:expression_title ?title .`,
+      '    ?work cdm:work_date_document ?date .',
+      `    FILTER(?date >= "${params.date_from}"^^xsd:date)`,
+    );
+
+    return [
+      'PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>',
+      'PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>',
+      '',
+      'SELECT DISTINCT ?work ?celex ?title ?date ?resType WHERE {',
+      ...whereLines,
+      '}',
+      'ORDER BY DESC(?date)',
+      `LIMIT ${params.limit}`,
+    ].join('\n');
+  }
+
+  /**
+   * Returns documents published since the given date, without a title text filter.
+   * Used by the eurlex_changes tool to surface recent legislative activity.
+   */
+  async recentDocuments(params: RecentQueryParams): Promise<SearchResult[]> {
+    const sparql = this.buildRecentQuery(params);
+    const httpLang = LANGUAGE_HTTP_MAP[params.language] ?? 'en';
+
+    const data = await this.executeSparql<{
+      results: {
+        bindings: {
+          work: { value: string };
+          celex: { value: string };
+          title: { value: string };
+          date?: { value: string };
+          resType: { value: string };
+        }[];
+      };
+    }>(sparql);
+
+    const results = data.results.bindings.map((b) => ({
+      celex: b.celex.value,
+      title: b.title.value,
+      date: b.date?.value ?? '',
+      type: b.resType.value,
+      eurlex_url: `${EURLEX_BASE}/${httpLang}/TXT/?uri=CELEX:${b.celex.value}`,
+    }));
+
+    const seen = new Set<string>();
+    return results.filter((r) => {
+      if (seen.has(r.celex)) return false;
+      seen.add(r.celex);
+      return true;
+    });
   }
 }

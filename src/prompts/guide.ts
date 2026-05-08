@@ -24,6 +24,10 @@ Akzeptiert Labels ("artificial intelligence") oder URIs ("http://eurovoc.europa.
 ### eurlex_consolidated — Konsolidierte Fassung
 Ruft die aktuell gültige Fassung ab (mit allen Änderungen eingearbeitet) via ELI.
 
+### eurlex_changes — Aktuelle Rechtsakte
+Gibt EU-Rechtsakte zurück, die seit einem bestimmten Datum veröffentlicht wurden.
+Parameter: since (YYYY-MM-DD), resource_type, language, limit (max 200).
+
 ## CELEX-Nummern-Schema
 - 3 = Sekundärrecht EU (Verordnungen, Richtlinien, Entscheidungen)
 - Danach: Jahr (4-stellig) + Typ-Buchstabe + Dokumentnummer

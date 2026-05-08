@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { registerGuidePrompt } from './prompts/guide.js';
+import { registerChangesTool } from './tools/changes.js';
 import { registerCitationsTool } from './tools/citations.js';
 import { registerConsolidatedTool } from './tools/consolidated.js';
 import { registerEurovocTool } from './tools/eurovoc.js';
@@ -20,6 +21,7 @@ export function createServer(): McpServer {
   registerCitationsTool(server);
   registerEurovocTool(server);
   registerConsolidatedTool(server);
+  registerChangesTool(server);
   registerGuidePrompt(server);
 
   return server;

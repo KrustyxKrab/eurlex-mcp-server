@@ -1,0 +1,322 @@
+openapi: "3.0.3"
+info:
+  title: EUR-Lex Connector
+  description: |
+    Search EU legislation, retrieve document text, and track legislative changes.
+    Import this spec as a Custom Connector in Power Platform to use with
+    Copilot Studio (RAG plugin) and Power Automate (change tracking workflow).
+  version: "1.0.0"
+  contact:
+    name: EUR-Lex Connector
+
+servers:
+  - url: https://your-deployment-url.azurewebsites.net
+    description: Production (replace with your actual deployment URL)
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /search:
+    get:
+      operationId: SearchLegislation
+      summary: Search EU legislation
+      description: Search EUR-Lex for regulations, directives, decisions, and case law by keyword. Returns document metadata including CELEX numbers, titles, dates, and EUR-Lex URLs.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search term matched against document titles
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+            enum: [REG, DIR, DEC, JUDG, RECO, any]
+            default: any
+          description: Filter by document type
+        - name: language
+          in: query
+          schema:
+            type: string
+            enum: [ENG, DEU, FRA]
+            default: ENG
+        - name: date_from
+          in: query
+          schema:
+            type: string
+          description: Filter from date (YYYY-MM-DD)
+        - name: date_to
+          in: query
+          schema:
+            type: string
+          description: Filter to date (YYYY-MM-DD)
+        - name: in_force_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+
+  /fetch/{celex_id}:
+    get:
+      operationId: FetchDocumentText
+      summary: Fetch document full text
+      description: Retrieve the full text of an EU legal document by its CELEX number. Returns plain text or XHTML.
+      parameters:
+        - name: celex_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "CELEX identifier (e.g. 32024R1689 for the AI Act)"
+        - name: language
+          in: query
+          schema:
+            type: string
+            enum: [ENG, DEU, FRA]
+            default: ENG
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [xhtml, plain]
+            default: plain
+        - name: max_chars
+          in: query
+          schema:
+            type: integer
+            default: 20000
+      responses:
+        "200":
+          description: Document text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchResponse"
+        "404":
+          description: Document not found
+
+  /metadata/{celex_id}:
+    get:
+      operationId: GetDocumentMetadata
+      summary: Get document metadata
+      description: Get structured metadata including dates, EuroVoc descriptors, in-force status, and ELI identifier.
+      parameters:
+        - name: celex_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: language
+          in: query
+          schema:
+            type: string
+            enum: [ENG, DEU, FRA]
+            default: ENG
+      responses:
+        "200":
+          description: Document metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetadataResponse"
+
+  /citations/{celex_id}:
+    get:
+      operationId: GetCitations
+      summary: Get citation graph
+      description: Explore which acts a document cites and which acts cite it.
+      parameters:
+        - name: celex_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [cites, cited_by, both]
+            default: both
+        - name: language
+          in: query
+          schema:
+            type: string
+            enum: [ENG, DEU, FRA]
+            default: ENG
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Citation graph
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /changes:
+    get:
+      operationId: GetLegislativeChanges
+      summary: Get legislative changes since last check
+      description: |
+        Returns new and modified documents since the last poll.
+        State is persisted server-side — each call only returns what changed.
+        Power Automate calls this on a schedule, then writes to Excel and sends email.
+      parameters:
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+            enum: [REG, DIR, DEC, JUDG, RECO, any]
+            default: any
+        - name: language
+          in: query
+          schema:
+            type: string
+            enum: [ENG, DEU, FRA]
+            default: ENG
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+      responses:
+        "200":
+          description: Change list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangesResponse"
+
+  /changes/reset:
+    post:
+      operationId: ResetChangeTracker
+      summary: Reset change tracking
+      description: Clears persisted state. Next poll treats everything as new.
+      responses:
+        "200":
+          description: Tracker reset
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    DocResult:
+      type: object
+      properties:
+        celex:
+          type: string
+        title:
+          type: string
+        date_document:
+          type: string
+        resource_type:
+          type: string
+        in_force:
+          type: string
+        eli:
+          type: string
+        url:
+          type: string
+
+    SearchResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocResult"
+
+    FetchResponse:
+      type: object
+      properties:
+        celex:
+          type: string
+        text:
+          type: string
+        chars:
+          type: integer
+
+    MetadataResponse:
+      type: object
+      properties:
+        celex:
+          type: string
+        title:
+          type: string
+        date_document:
+          type: string
+        resource_type:
+          type: string
+        in_force:
+          type: string
+        eli:
+          type: string
+        url:
+          type: string
+        eurovoc:
+          type: array
+          items:
+            type: string
+
+    ChangeItem:
+      type: object
+      properties:
+        celex:
+          type: string
+        title:
+          type: string
+        resource_type:
+          type: string
+        date_document:
+          type: string
+        change_type:
+          type: string
+          enum: [new, modified]
+        detected_at:
+          type: string
+        url:
+          type: string
+        eli:
+          type: string
+
+    ChangesResponse:
+      type: object
+      properties:
+        last_check:
+          type: string
+          nullable: true
+        count:
+          type: integer
+        new_count:
+          type: integer
+        modified_count:
+          type: integer
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeItem"

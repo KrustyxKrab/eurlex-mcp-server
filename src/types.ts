@@ -78,3 +78,16 @@ export interface ConsolidatedResult {
   char_count: number;
   eli_url: string;
 }
+
+export interface RecentQueryParams {
+  resource_type: string;
+  language: string;
+  limit: number;
+  date_from: string;
+}
+
+export interface RecentDocsResult {
+  since: string;
+  results: SearchResult[];
+  total: number;
+}

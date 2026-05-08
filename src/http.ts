@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import express, { type Request, type Response } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 
 import { SESSION_TTL_MS } from './constants.js';
+import { logger } from './logger.js';
 import { createServer } from './server.js';
+
+const SERVER_START = Date.now();
 
 // Rate limiting: each MCP request triggers upstream EUR-Lex API calls
 export const mcpLimiter = rateLimit({
@@ -19,6 +22,28 @@ export const mcpLimiter = rateLimit({
   validate: { keyGeneratorIpFallback: false },
 });
 
+function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  const start = Date.now();
+  const reqId = (req.headers['x-request-id'] as string) ?? randomUUID().slice(0, 8);
+  res.setHeader('x-request-id', reqId);
+
+  res.on('finish', () => {
+    logger.info(
+      {
+        req_id: reqId,
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        duration_ms: Date.now() - start,
+        session_id: req.headers['mcp-session-id'] ?? undefined,
+      },
+      'request',
+    );
+  });
+
+  next();
+}
+
 export function createApp(): {
   app: express.Express;
   transports: Map<string, StreamableHTTPServerTransport>;
@@ -26,6 +51,7 @@ export function createApp(): {
 } {
   const app = express();
   app.use(express.json());
+  app.use(requestLogger);
   app.use('/mcp', mcpLimiter);
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -42,6 +68,7 @@ export function createApp(): {
           transports.delete(sid);
         }
         lastSeen.delete(sid);
+        logger.debug({ session_id: sid }, 'session swept (TTL expired)');
       }
     }
   }, 60_000);
@@ -52,7 +79,10 @@ export function createApp(): {
     res.json({
       status: 'ok',
       service: 'eurlex-mcp-server',
-      activeSessions: transports.size,
+      version: '1.0.0',
+      uptime_s: Math.floor((Date.now() - SERVER_START) / 1000),
+      node_version: process.version,
+      active_sessions: transports.size,
     });
   });
 
@@ -78,6 +108,7 @@ export function createApp(): {
       onsessioninitialized: (sid: string): void => {
         transports.set(sid, transport);
         lastSeen.set(sid, Date.now());
+        logger.info({ session_id: sid }, 'session initialized');
       },
     });
 
@@ -86,6 +117,7 @@ export function createApp(): {
       if (sid) {
         transports.delete(sid);
         lastSeen.delete(sid);
+        logger.info({ session_id: sid }, 'session closed');
       }
     };
 
@@ -126,9 +158,30 @@ export function createApp(): {
 // ---------------------------------------------------------------------------
 
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-  const { app } = createApp();
-  const PORT = process.env.PORT ?? 3001;
-  app.listen(Number(PORT), () => {
-    console.log(`eurlex-mcp-server listening on http://localhost:${PORT}`);
+  const { app, transports } = createApp();
+  const PORT = Number(process.env.PORT ?? 3001);
+
+  const httpServer = app.listen(PORT, () => {
+    logger.info({ port: PORT }, 'eurlex-mcp-server HTTP transport listening');
   });
+
+  const shutdown = (signal: string): void => {
+    logger.info({ signal }, 'shutdown initiated');
+    httpServer.close(() => {
+      for (const [sid, transport] of transports) {
+        transport.close?.();
+        transports.delete(sid);
+      }
+      logger.info('server closed gracefully');
+      process.exit(0);
+    });
+    // Force-exit after 30 s if graceful close stalls
+    setTimeout(() => {
+      logger.error('forced shutdown after timeout');
+      process.exit(1);
+    }, 30_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
