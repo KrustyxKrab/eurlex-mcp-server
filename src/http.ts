@@ -87,8 +87,10 @@ export function createApp(): {
     });
   });
 
-  // REST API — consumed by Power Platform Custom Connector
-  // Protected by optional API key (set API_KEY env var to enable)
+  // REST API — mounted at /api, consumed by Power Platform Custom Connector
+  // Prefixing at /api means Express does NOT strip the route paths the
+  // restRouter defines (/search, /fetch/:id, etc.), so they match correctly.
+  // The MCP endpoint (/mcp) is unaffected — it never reaches this handler.
   const apiKey = process.env.API_KEY;
   const apiKeyGuard = (req: Request, res: Response, next: NextFunction): void => {
     if (!apiKey) {
@@ -101,11 +103,7 @@ export function createApp(): {
     }
     next();
   };
-  app.use('/search', apiKeyGuard, restRouter);
-  app.use('/fetch', apiKeyGuard, restRouter);
-  app.use('/metadata', apiKeyGuard, restRouter);
-  app.use('/citations', apiKeyGuard, restRouter);
-  app.use('/changes', apiKeyGuard, restRouter);
+  app.use('/api', apiKeyGuard, restRouter);
 
   // POST /mcp — create or reuse session
   app.post('/mcp', async (req: Request, res: Response) => {

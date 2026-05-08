@@ -10,7 +10,7 @@ info:
     name: EUR-Lex Connector
 
 servers:
-  - url: https://eurlex-mcp-server.fly.dev
+  - url: https://eurlex-mcp-server.fly.dev/api
     description: Production (Fly.io)
 
 security:
