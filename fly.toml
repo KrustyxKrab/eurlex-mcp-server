@@ -12,6 +12,10 @@ primary_region = 'ams'   # Amsterdam — close to EU Publications Office endpoin
   NODE_ENV  = 'production'
   PORT      = '3001'
   LOG_LEVEL = 'info'
+  # API_KEY is set as a Fly secret (not here) — run: fly secrets set API_KEY=your-secret
+  # When set, all REST endpoints (/search, /fetch, /metadata, /citations, /changes)
+  # require the header: X-API-Key: your-secret
+  # The MCP endpoint (/mcp) is rate-limited but does not require a key.
 
 [http_service]
   internal_port       = 3001   # must match PORT above

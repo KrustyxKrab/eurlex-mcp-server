@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 
 import { SESSION_TTL_MS } from './constants.js';
 import { logger } from './logger.js';
+import { restRouter } from './rest.js';
 import { createServer } from './server.js';
 
 const SERVER_START = Date.now();
@@ -85,6 +86,26 @@ export function createApp(): {
       active_sessions: transports.size,
     });
   });
+
+  // REST API — consumed by Power Platform Custom Connector
+  // Protected by optional API key (set API_KEY env var to enable)
+  const apiKey = process.env.API_KEY;
+  const apiKeyGuard = (req: Request, res: Response, next: NextFunction): void => {
+    if (!apiKey) {
+      next();
+      return;
+    }
+    if (req.headers['x-api-key'] !== apiKey) {
+      res.status(401).json({ error: 'Invalid or missing API key' });
+      return;
+    }
+    next();
+  };
+  app.use('/search', apiKeyGuard, restRouter);
+  app.use('/fetch', apiKeyGuard, restRouter);
+  app.use('/metadata', apiKeyGuard, restRouter);
+  app.use('/citations', apiKeyGuard, restRouter);
+  app.use('/changes', apiKeyGuard, restRouter);
 
   // POST /mcp — create or reuse session
   app.post('/mcp', async (req: Request, res: Response) => {

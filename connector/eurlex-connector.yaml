@@ -10,8 +10,8 @@ info:
     name: EUR-Lex Connector
 
 servers:
-  - url: https://your-deployment-url.azurewebsites.net
-    description: Production (replace with your actual deployment URL)
+  - url: https://eurlex-mcp-server.fly.dev
+    description: Production (Fly.io)
 
 security:
   - ApiKeyAuth: []
@@ -175,12 +175,18 @@ paths:
   /changes:
     get:
       operationId: GetLegislativeChanges
-      summary: Get legislative changes since last check
+      summary: Get documents published since a date
       description: |
-        Returns new and modified documents since the last poll.
-        State is persisted server-side — each call only returns what changed.
-        Power Automate calls this on a schedule, then writes to Excel and sends email.
+        Returns EU legal documents published since `since`.
+        Pass the date from the previous run as `since` to get only new documents.
+        Power Automate calls this on a schedule, stores the date, and passes it next time.
+        Defaults to 30 days ago if `since` is omitted.
       parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+          description: "Start date in YYYY-MM-DD format, e.g. 2024-01-01. Defaults to 30 days ago."
         - name: resource_type
           in: query
           schema:
@@ -206,14 +212,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChangesResponse"
 
-  /changes/reset:
-    post:
-      operationId: ResetChangeTracker
-      summary: Reset change tracking
-      description: Clears persisted state. Next poll treats everything as new.
-      responses:
-        "200":
-          description: Tracker reset
 
 components:
   securitySchemes:
