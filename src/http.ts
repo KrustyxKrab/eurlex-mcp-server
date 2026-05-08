@@ -12,7 +12,6 @@ import { createServer } from './server.js';
 
 const SERVER_START = Date.now();
 
-// Rate limiting: each MCP request triggers upstream EUR-Lex API calls
 export const mcpLimiter = rateLimit({
   windowMs: 60_000,
   max: 60,
@@ -27,7 +26,6 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
   const reqId = (req.headers['x-request-id'] as string) ?? randomUUID().slice(0, 8);
   res.setHeader('x-request-id', reqId);
-
   res.on('finish', () => {
     logger.info(
       {
@@ -41,7 +39,6 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
       'request',
     );
   });
-
   next();
 }
 
@@ -58,16 +55,12 @@ export function createApp(): {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const lastSeen = new Map<string, number>();
 
-  // Sweep stale sessions (unref'd so it doesn't prevent exit)
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const [sid, ts] of lastSeen) {
       if (now - ts > SESSION_TTL_MS) {
-        const t = transports.get(sid);
-        if (t) {
-          t.close?.();
-          transports.delete(sid);
-        }
+        transports.get(sid)?.close?.();
+        transports.delete(sid);
         lastSeen.delete(sid);
         logger.debug({ session_id: sid }, 'session swept (TTL expired)');
       }
@@ -75,7 +68,7 @@ export function createApp(): {
   }, 60_000);
   sweep.unref();
 
-  // Health check
+  // Health — no auth
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
       status: 'ok',
@@ -87,10 +80,7 @@ export function createApp(): {
     });
   });
 
-  // REST API — mounted at /api, consumed by Power Platform Custom Connector
-  // Prefixing at /api means Express does NOT strip the route paths the
-  // restRouter defines (/search, /fetch/:id, etc.), so they match correctly.
-  // The MCP endpoint (/mcp) is unaffected — it never reaches this handler.
+  // REST API — strictly scoped to /api, used by Power Platform Custom Connector
   const apiKey = process.env.API_KEY;
   const apiKeyGuard = (req: Request, res: Response, next: NextFunction): void => {
     if (!apiKey) {
@@ -105,15 +95,20 @@ export function createApp(): {
   };
   app.use('/api', apiKeyGuard, restRouter);
 
-  // POST /mcp — create or reuse session
-  app.post('/mcp', async (req: Request, res: Response) => {
+  // ---------------------------------------------------------------------------
+  // MCP transport
+  // Copilot Studio native MCP connector posts to / (base URL)
+  // Claude Desktop / Claude Code / mcp-remote post to /mcp
+  // Both paths share the same session store and handlers.
+  // ---------------------------------------------------------------------------
+  const handleMcpPost = async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId && transports.has(sessionId)) {
-      const transport = transports.get(sessionId);
-      if (!transport) return;
+      const existing = transports.get(sessionId);
+      if (!existing) return;
       lastSeen.set(sessionId, Date.now());
-      await transport.handleRequest(req, res, req.body);
+      await existing.handleRequest(req, res, req.body);
       return;
     }
 
@@ -130,7 +125,6 @@ export function createApp(): {
         logger.info({ session_id: sid }, 'session initialized');
       },
     });
-
     transport.onclose = (): void => {
       const sid = transport.sessionId;
       if (sid) {
@@ -143,31 +137,37 @@ export function createApp(): {
     const server = createServer();
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-  });
+  };
 
-  // GET /mcp — SSE on existing session
-  app.get('/mcp', async (req: Request, res: Response) => {
+  const handleMcpGet = async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (!sessionId || !transports.has(sessionId)) {
+    const t = sessionId ? transports.get(sessionId) : undefined;
+    if (!t) {
       res.status(400).json({ error: 'Invalid or missing session ID' });
       return;
     }
-    const transport = transports.get(sessionId);
-    if (!transport) return;
-    await transport.handleRequest(req, res);
-  });
+    await t.handleRequest(req, res);
+  };
 
-  // DELETE /mcp — session cleanup
-  app.delete('/mcp', async (req: Request, res: Response) => {
+  const handleMcpDelete = async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (!sessionId || !transports.has(sessionId)) {
+    const t = sessionId ? transports.get(sessionId) : undefined;
+    if (!t) {
       res.status(400).json({ error: 'Invalid or missing session ID' });
       return;
     }
-    const transport = transports.get(sessionId);
-    if (!transport) return;
-    await transport.handleRequest(req, res);
-  });
+    await t.handleRequest(req, res);
+  };
+
+  // Copilot Studio uses the base URL — serve MCP at root
+  app.post('/', handleMcpPost);
+  app.get('/', handleMcpGet);
+  app.delete('/', handleMcpDelete);
+
+  // Claude Desktop / Claude Code / mcp-remote use /mcp
+  app.post('/mcp', handleMcpPost);
+  app.get('/mcp', handleMcpGet);
+  app.delete('/mcp', handleMcpDelete);
 
   return { app, transports, lastSeen };
 }
@@ -194,7 +194,6 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       logger.info('server closed gracefully');
       process.exit(0);
     });
-    // Force-exit after 30 s if graceful close stalls
     setTimeout(() => {
       logger.error('forced shutdown after timeout');
       process.exit(1);
