@@ -1,0 +1,32 @@
+# fly.toml — eurlex-mcp-server
+# Deploy: fly deploy
+# Docs:   https://fly.io/docs/reference/configuration/
+
+app            = 'eurlex-mcp-server'
+primary_region = 'ams'   # Amsterdam — close to EU Publications Office endpoints
+
+[build]
+  # Dockerfile in repo root is auto-detected
+
+[env]
+  NODE_ENV  = 'production'
+  PORT      = '3001'
+  LOG_LEVEL = 'info'
+
+[http_service]
+  internal_port       = 3001   # must match PORT above
+  force_https         = true
+  auto_stop_machines  = 'stop'
+  auto_start_machines = true
+  # 0 = machine stops when idle (cheapest); set to 1 if cold starts are unacceptable
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type       = 'requests'
+    soft_limit = 50
+    hard_limit = 60   # matches express-rate-limit max (60 req/min per session)
+
+[[vm]]
+  cpu_kind  = 'shared'
+  cpus      = 1
+  memory_mb = 256   # Node.js + pino — 256 MB is sufficient
